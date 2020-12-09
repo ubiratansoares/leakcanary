@@ -5,33 +5,26 @@ import android.app.ActivityManager.MemoryInfo
 import android.app.Application
 import android.content.Context
 import android.os.Build
-import leakcanary.internal.uiHandler
+import leakcanary.HeapAnalysisInterceptor.Chain
 
-class MinimumMemoryCondition(
+class MinimumMemoryInterceptor(
   private val application: Application,
-  private val minRequiredAvailableMemoryBytes: Long = 100_000_000,
-  private val tryAgainDelayMillis: Long = 30_000
-) : HeapAnalysisCondition() {
+  private val minimumRequiredAvailableMemoryBytes: Long = 100_000_000,
+) : HeapAnalysisInterceptor {
 
-  private val postedRetry = Runnable {
-    trigger.conditionChanged(
-      "$tryAgainDelayMillis ms passed since last memory check"
-    )
-  }
 
   private val memoryInfo = MemoryInfo()
 
-  override fun evaluate(): Result {
-    uiHandler.removeCallbacks(postedRetry)
+  override fun intercept(chain: Chain): HeapAnalysisJob.Result {
     val activityManager = application.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
 
     if (Build.VERSION.SDK_INT >= 19 && activityManager.isLowRamDevice) {
-      return Result.StopAnalysis("low ram device")
+      return chain.canceled("low ram device")
     }
     activityManager.getMemoryInfo(memoryInfo)
 
     if (memoryInfo.lowMemory || memoryInfo.availMem <= memoryInfo.threshold) {
-      return Result.StopAnalysis("low memory")
+      return chain.canceled("low memory")
     }
     val systemAvailableMemory = memoryInfo.availMem - memoryInfo.threshold
 
@@ -40,12 +33,11 @@ class MinimumMemoryCondition(
     val appAvailableMemory = runtime.maxMemory() - appUsedMemory
 
     val availableMemory = systemAvailableMemory.coerceAtMost(appAvailableMemory)
-    return if (availableMemory >= minRequiredAvailableMemoryBytes) {
-      Result.StartAnalysis
+    return if (availableMemory >= minimumRequiredAvailableMemoryBytes) {
+      chain.proceed()
     } else {
-      uiHandler.postDelayed(postedRetry, tryAgainDelayMillis)
-      Result.StopAnalysis(
-        "Not enough free memory: available $availableMemory < min $minRequiredAvailableMemoryBytes"
+      chain.canceled(
+        "not enough free memory: available $availableMemory < min $minimumRequiredAvailableMemoryBytes"
       )
     }
   }
